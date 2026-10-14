@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-};
+const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
+const ROLE_LABELS = { STUDENT: "Student", FACULTY: "Faculty", LAB_ADMIN: "Lab Admin" };
+
 async function request(path, { token, ...options } = {}) {
   const response = await fetch(`${API}${path}`, {
     ...options,
@@ -15,181 +13,265 @@ async function request(path, { token, ...options } = {}) {
     }
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || "Request failed.");
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
   return data;
 }
 
-export default function App() {
-  const [token, setToken] = useState(() => localStorage.getItem("labbook_token") || "");
-  const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("labbook_user") || "null"); } catch { return null; }
-  });
-  const [authMode, setAuthMode] = useState("login");
-  const [auth, setAuth] = useState({ name: "", email: "", password: "" });
-  const [equipment, setEquipment] = useState([]);
-  const [bookings, setBookings] = useState([]);
-  const [selectedEquipment, setSelectedEquipment] = useState("");
-  const [date, setDate] = useState(today());
-  const [slots, setSlots] = useState([]);
-  const [selectedSlot, setSelectedSlot] = useState(null);
-  const [tab, setTab] = useState("book");
-  const [notice, setNotice] = useState({ type: "", text: "" });
+function prettyDate(value) {
+  if (!value) return "—";
+  return new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState("login");
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const selected = useMemo(() => equipment.find((item) => String(item.id) === String(selectedEquipment)), [equipment, selectedEquipment]);
+  function change(event) {
+    setForm({ ...form, [event.target.name]: event.target.value });
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      const data = await request(`/api/auth/${mode === "login" ? "login" : "register"}`, {
+        method: "POST", body: JSON.stringify(form)
+      });
+      onAuth(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-shell">
+      <section className="hero-panel">
+        <div className="brand"><span className="brand-mark">L</span> LabBook</div>
+        <div className="hero-copy">
+          <p className="eyebrow">LABORATORY RESOURCE MANAGEMENT</p>
+          <h1>Make time for <em>discovery.</em></h1>
+          <p className="hero-description">One simple place to find equipment, reserve a slot, and keep your lab work moving.</p>
+          <div className="steps"><span><b>01</b>Find equipment</span><span><b>02</b>Choose a slot</span><span><b>03</b>Get to work</span></div>
+        </div>
+        <p className="hero-foot">LABORATORY EQUIPMENT BOOKING SYSTEM <span>•</span> MVP</p>
+      </section>
+      <section className="auth-panel">
+        <div className="auth-card">
+          <p className="eyebrow muted">{mode === "login" ? "WELCOME BACK" : "GET STARTED"}</p>
+          <h2>{mode === "login" ? "Sign in to your lab" : "Create your account"}</h2>
+          <p className="subheading">{mode === "login" ? "Access your equipment bookings and reservations." : "New registrations receive the Student role."}</p>
+          <form onSubmit={submit}>
+            {mode === "register" && <label>Full name<input name="name" value={form.name} onChange={change} placeholder="Your name" required minLength="2" /></label>}
+            <label>Email address<input name="email" type="email" value={form.email} onChange={change} placeholder="you@university.edu" required /></label>
+            <label>Password<input name="password" type="password" value={form.password} onChange={change} placeholder="At least 8 characters" required minLength="8" /></label>
+            {error && <p className="alert error">{error}</p>}
+            <button className="primary full" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in ↗" : "Create account ↗"}</button>
+          </form>
+          <p className="switch-auth">{mode === "login" ? "New to LabBook?" : "Already have an account?"} <button className="text-button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }}>{mode === "login" ? "Create an account" : "Sign in"}</button></p>
+          <p className="privacy-note">Your account is used only to manage your bookings.</p>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState(() => {
+    try {
+      const saved = localStorage.getItem("labbook-session");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
+  const [tab, setTab] = useState("equipment");
+  const [equipment, setEquipment] = useState([]);
+  const [bookings, setBookings] = useState([]);
+  const [notice, setNotice] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [bookingForm, setBookingForm] = useState({ equipmentId: "", date: "", startTime: "09:00", endTime: "10:00", purpose: "" });
+  const [equipmentForm, setEquipmentForm] = useState({ name: "", description: "", location: "Main Laboratory" });
+
+  const user = session?.user;
+  const isAdmin = user?.role === "LAB_ADMIN";
+  const canBook = user?.role === "STUDENT" || user?.role === "FACULTY";
 
   function saveSession(data) {
-    localStorage.setItem("labbook_token", data.token);
-    localStorage.setItem("labbook_user", JSON.stringify(data.user));
-    setToken(data.token); setUser(data.user);
+    localStorage.setItem("labbook-session", JSON.stringify(data));
+    setSession(data);
+    setNotice({ type: "success", text: `Welcome, ${data.user.name}.` });
   }
+
   function logout() {
-    localStorage.removeItem("labbook_token"); localStorage.removeItem("labbook_user");
-    setToken(""); setUser(null); setBookings([]); setEquipment([]); setSlots([]);
-    setNotice({ type: "success", text: "You have been logged out." });
+    localStorage.removeItem("labbook-session");
+    setSession(null);
+    setEquipment([]);
+    setBookings([]);
+    setNotice(null);
   }
-  async function submitAuth(e) {
-    e.preventDefault(); setBusy(true); setNotice({ type: "", text: "" });
+
+  async function loadData() {
+    if (!session?.token) return;
+    setLoading(true);
     try {
-      const endpoint = authMode === "register" ? "/auth/register" : "/auth/login";
-      const data = await request(endpoint, { method: "POST", body: JSON.stringify(auth) });
-      saveSession(data);
-      setNotice({ type: "success", text: data.message });
-      setAuth({ name: "", email: "", password: "" });
-    } catch (err) { setNotice({ type: "error", text: err.message }); }
-    finally { setBusy(false); }
+      const [eq, bk] = await Promise.all([
+        request("/api/equipment", { token: session.token }),
+        request("/api/bookings", { token: session.token })
+      ]);
+      setEquipment(eq.equipment);
+      setBookings(bk.bookings);
+    } catch (err) {
+      if (/token|auth/i.test(err.message)) logout();
+      else setNotice({ type: "error", text: err.message });
+    } finally { setLoading(false); }
   }
-  async function loadEquipment(currentToken = token) {
-    const data = await request("/equipment", { token: currentToken });
-    setEquipment(data);
-    if (data.length && !selectedEquipment) setSelectedEquipment(String(data[0].id));
-  }
-  async function loadBookings(currentToken = token) {
-    const data = await request("/bookings", { token: currentToken });
-    setBookings(data);
-  }
-  async function loadSlots() {
-    if (!selectedEquipment || !date) return;
-    setSelectedSlot(null);
+
+  useEffect(() => { loadData(); }, [session?.token]);
+
+  const counts = useMemo(() => ({
+    total: equipment.length,
+    pending: bookings.filter(b => b.status === "PENDING").length,
+    confirmed: bookings.filter(b => b.status === "CONFIRMED").length
+  }), [equipment, bookings]);
+
+  async function createBooking(event) {
+    event.preventDefault();
     try {
-      const data = await request(`/equipment/${selectedEquipment}/slots?date=${date}`, { token });
-      setSlots(data.slots);
-    } catch (err) { setSlots([]); setNotice({ type: "error", text: err.message }); }
-  }
-  useEffect(() => {
-    if (!token) return;
-    Promise.all([loadEquipment(token), loadBookings(token)]).catch((err) => {
-      setNotice({ type: "error", text: err.message });
-      if (/session|log in/i.test(err.message)) logout();
-    });
-  }, [token]);
-  useEffect(() => { if (token && selectedEquipment) loadSlots(); }, [token, selectedEquipment, date]);
-  async function refresh() {
-    await Promise.all([loadEquipment(), loadBookings()]);
-    await loadSlots();
-  }
-  async function createBooking() {
-    if (!selected || !selectedSlot) return;
-    setBusy(true);
-    try {
-      const data = await request("/bookings", {
-        token, method: "POST",
-        body: JSON.stringify({ equipmentId: selected.id, date, startTime: selectedSlot.startTime, endTime: selectedSlot.endTime })
+      await request("/api/bookings", {
+        token: session.token, method: "POST", body: JSON.stringify(bookingForm)
       });
-      setNotice({ type: "success", text: data.message });
-      setSelectedSlot(null);
-      await refresh();
+      setNotice({ type: "success", text: "Booking request submitted for review." });
+      setBookingForm({ equipmentId: "", date: "", startTime: "09:00", endTime: "10:00", purpose: "" });
       setTab("bookings");
-    } catch (err) { setNotice({ type: "error", text: err.message }); await loadSlots(); }
-    finally { setBusy(false); }
-  }
-  async function bookingAction(id, action) {
-    setBusy(true);
-    try {
-      const data = await request(`/bookings/${id}/${action}`, { token, method: "PATCH" });
-      setNotice({ type: "success", text: data.message });
-      await refresh();
+      await loadData();
     } catch (err) { setNotice({ type: "error", text: err.message }); }
-    finally { setBusy(false); }
   }
 
-  if (!token || !user) {
-    return <div className="auth-page">
-      <div className="auth-visual">
+  async function cancelBooking(id) {
+    try {
+      await request(`/api/bookings/${id}/cancel`, { token: session.token, method: "PATCH" });
+      setNotice({ type: "success", text: "Booking cancelled." });
+      await loadData();
+    } catch (err) { setNotice({ type: "error", text: err.message }); }
+  }
+
+  async function reviewBooking(id, status) {
+    try {
+      await request(`/api/bookings/${id}/review`, {
+        token: session.token, method: "PATCH", body: JSON.stringify({ status })
+      });
+      setNotice({ type: "success", text: `Booking ${status.toLowerCase()}.` });
+      await loadData();
+    } catch (err) { setNotice({ type: "error", text: err.message }); }
+  }
+
+  async function addEquipment(event) {
+    event.preventDefault();
+    try {
+      await request("/api/equipment", { token: session.token, method: "POST", body: JSON.stringify(equipmentForm) });
+      setEquipmentForm({ name: "", description: "", location: "Main Laboratory" });
+      setNotice({ type: "success", text: "Equipment added." });
+      await loadData();
+    } catch (err) { setNotice({ type: "error", text: err.message }); }
+  }
+
+  async function toggleEquipment(item) {
+    try {
+      await request(`/api/equipment/${item.id}`, {
+        token: session.token, method: "PATCH", body: JSON.stringify({ isAvailable: !item.isAvailable })
+      });
+      setNotice({ type: "success", text: `Equipment ${item.isAvailable ? "disabled" : "enabled"}.` });
+      await loadData();
+    } catch (err) { setNotice({ type: "error", text: err.message }); }
+  }
+
+  if (!session) return <AuthScreen onAuth={saveSession} />;
+
+  const nav = [
+    { id: "equipment", label: "Equipment" },
+    { id: "bookings", label: isAdmin ? "All bookings" : "My bookings" },
+    ...(canBook ? [{ id: "new-booking", label: "Request a slot" }] : []),
+    ...(isAdmin ? [{ id: "manage-equipment", label: "Manage equipment" }] : [])
+  ];
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
         <div className="brand"><span className="brand-mark">L</span> LabBook</div>
-        <div className="visual-copy">
-          <span className="eyebrow">LABORATORY RESOURCE MANAGEMENT</span>
-          <h1>Make time for<br/><em>discovery.</em></h1>
-          <p>One simple place to find equipment, reserve a slot, and keep your lab work moving.</p>
-          <div className="visual-stats"><div><strong>01</strong><span>Find equipment</span></div><div><strong>02</strong><span>Choose a slot</span></div><div><strong>03</strong><span>Get to work</span></div></div>
+        <p className="side-label">WORKSPACE</p>
+        <nav>{nav.map(item => <button key={item.id} className={`nav-item ${tab === item.id ? "active" : ""}`} onClick={() => setTab(item.id)}>{item.label}</button>)}</nav>
+        <div className="sidebar-bottom">
+          <div className="avatar">{user.name.slice(0, 1).toUpperCase()}</div>
+          <div className="user-meta"><strong>{user.name}</strong><span>{ROLE_LABELS[user.role] || user.role}</span></div>
+          <button className="logout" onClick={logout} title="Sign out">↗</button>
         </div>
-        <div className="visual-foot">LABORATORY EQUIPMENT BOOKING SYSTEM <span>•</span> MVP</div>
-      </div>
-      <main className="auth-panel">
-        <div className="mobile-brand"><span className="brand-mark">L</span> LabBook</div>
-        <div className="auth-card">
-          <span className="eyebrow">{authMode === "login" ? "WELCOME BACK" : "GET STARTED"}</span>
-          <h2>{authMode === "login" ? "Sign in to your lab" : "Create your account"}</h2>
-          <p className="muted">{authMode === "login" ? "Access your equipment bookings and reservations." : "Register to start booking laboratory equipment."}</p>
-          {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
-          <form onSubmit={submitAuth}>
-            {authMode === "register" && <label>Full name<input required minLength="2" value={auth.name} onChange={(e) => setAuth({...auth, name:e.target.value})} placeholder="e.g. Tanisha Gupta"/></label>}
-            <label>Email address<input required type="email" value={auth.email} onChange={(e) => setAuth({...auth, email:e.target.value})} placeholder="you@university.edu"/></label>
-            <label>Password<input required minLength="8" type="password" value={auth.password} onChange={(e) => setAuth({...auth, password:e.target.value})} placeholder="At least 8 characters"/></label>
-            <button className="primary full" disabled={busy}>{busy ? "Please wait…" : authMode === "login" ? "Sign in" : "Create account"} <span>↗</span></button>
-          </form>
-          <div className="switch-auth">{authMode === "login" ? "New to LabBook?" : "Already have an account?"} <button onClick={() => {setAuthMode(authMode === "login" ? "register" : "login");setNotice({type:"",text:""});}}>{authMode === "login" ? "Create an account" : "Sign in"}</button></div>
-          <p className="auth-note">Your account is used only to manage your bookings.</p>
-        </div>
-      </main>
-    </div>;
-  }
+      </aside>
+      <main className="main-panel">
+        <header className="topbar"><div><p className="eyebrow muted">LABORATORY RESOURCE MANAGEMENT</p><h1>{nav.find(n => n.id === tab)?.label || "Dashboard"}</h1></div><button className="outline" onClick={loadData}>{loading ? "Refreshing…" : "↻ Refresh"}</button></header>
+        {notice && <div className={`alert ${notice.type}`}><span>{notice.text}</span><button onClick={() => setNotice(null)}>×</button></div>}
+        <section className="stats-grid">
+          <article className="stat-card"><span>Equipment listed</span><strong>{counts.total}</strong><small>Resources in your lab</small></article>
+          <article className="stat-card"><span>{isAdmin ? "Pending reviews" : "Pending requests"}</span><strong>{counts.pending}</strong><small>Awaiting a decision</small></article>
+          <article className="stat-card"><span>Confirmed bookings</span><strong>{counts.confirmed}</strong><small>Approved time slots</small></article>
+        </section>
 
-  const activeCount = bookings.filter((b) => b.status !== "CANCELLED").length;
-  return <div className="app-shell">
-    <header className="topbar">
-      <div className="brand"><span className="brand-mark">L</span> LabBook <span className="brand-divider">/</span> <span className="brand-sub">Equipment booking</span></div>
-      <div className="profile"><span className="avatar">{user.name.slice(0,1).toUpperCase()}</span><span className="profile-name">{user.name}</span><button className="text-button" onClick={logout}>Sign out ↗</button></div>
-    </header>
-    <main className="dashboard">
-      <section className="welcome-row">
-        <div><span className="eyebrow">LABORATORY RESOURCE MANAGEMENT</span><h1>Good work starts <em>here.</em></h1><p>Find the right equipment and reserve time for your next experiment.</p></div>
-        <div className="welcome-icon">✳</div>
-      </section>
-      {notice.text && <div className={`notice global-notice ${notice.type}`}><span>{notice.text}</span><button onClick={() => setNotice({type:"",text:""})}>×</button></div>}
-      <section className="stats-row">
-        <div className="stat-card"><span className="stat-label">AVAILABLE EQUIPMENT</span><strong>{equipment.length.toString().padStart(2,"0")}</strong><span className="stat-foot">Ready to reserve</span></div>
-        <div className="stat-card"><span className="stat-label">YOUR BOOKINGS</span><strong>{bookings.length.toString().padStart(2,"0")}</strong><span className="stat-foot">All booking records</span></div>
-        <div className="stat-card"><span className="stat-label">ACTIVE BOOKINGS</span><strong>{activeCount.toString().padStart(2,"0")}</strong><span className="stat-foot">Pending or confirmed</span></div>
-      </section>
-      <div className="section-tabs">
-        <button className={tab === "book" ? "active" : ""} onClick={() => setTab("book")}>Find equipment <span>01</span></button>
-        <button className={tab === "bookings" ? "active" : ""} onClick={() => setTab("bookings")}>My bookings <span>02</span></button>
-      </div>
-      {tab === "book" ? <section className="booking-layout">
-        <div className="equipment-panel">
-          <div className="section-heading"><div><span className="eyebrow">EQUIPMENT DIRECTORY</span><h2>Choose your equipment</h2></div><span className="result-count">{equipment.length} items</span></div>
-          {equipment.length === 0 ? <div className="empty-state">No equipment found. Check that the database seed command has run.</div> :
-            <div className="equipment-grid">{equipment.map((item, i) => <button key={item.id} className={`equipment-card ${String(item.id) === String(selectedEquipment) ? "selected" : ""}`} onClick={() => setSelectedEquipment(String(item.id))}>
-              <div className={`equipment-art art-${i%4}`}><span>{["⌁","▧","◉","⌬"][i%4]}</span><small>LAB / {String(item.id).padStart(2,"0")}</small></div>
-              <div className="equipment-info"><span className="availability"><i/> AVAILABLE</span><h3>{item.name}</h3><p>{item.description}</p><div className="equipment-meta"><span>⌖ {item.location}</span><span>↗</span></div></div>
-            </button>)}</div>}
-        </div>
-        <aside className="slot-panel">
-          <div className="section-heading"><div><span className="eyebrow">RESERVATION</span><h2>Pick a time</h2></div><span className="step-number">02</span></div>
-          <label className="date-label">Booking date<input type="date" min={today()} value={date} onChange={(e) => setDate(e.target.value)}/></label>
-          <div className="slot-subtitle"><span>{selected?.name || "Select equipment"}</span><span>60 MIN SLOTS</span></div>
-          <div className="slots-grid">{slots.map((slot) => <button key={slot.startTime} disabled={!slot.available} onClick={() => setSelectedSlot(slot)} className={`slot ${!slot.available ? "unavailable" : ""} ${selectedSlot?.startTime === slot.startTime ? "chosen" : ""}`}><span>{slot.startTime}</span><small>{slot.available ? "Available" : "Booked"}</small></button>)}</div>
-          <div className="slot-legend"><span><i className="legend-open"/> Available</span><span><i className="legend-booked"/> Unavailable</span></div>
-          <div className="selection-summary"><div><span className="eyebrow">YOUR SELECTION</span><strong>{selectedSlot ? `${selectedSlot.startTime} – ${selectedSlot.endTime}` : "No time selected"}</strong><small>{date} {selected ? `· ${selected.name}` : ""}</small></div><button className="primary" disabled={!selectedSlot || busy} onClick={createBooking}>{busy ? "Sending…" : "Request booking"} <span>↗</span></button></div>
-          <p className="fine-print">Requests are pending until you confirm them in My bookings. Slots are held while a request is pending.</p>
-        </aside>
-      </section> : <section className="bookings-panel">
-        <div className="section-heading"><div><span className="eyebrow">YOUR RESERVATIONS</span><h2>My bookings</h2></div><button className="secondary" onClick={refresh}>↻ Refresh</button></div>
-        {bookings.length === 0 ? <div className="empty-state"><span className="empty-icon">◷</span><h3>No bookings yet</h3><p>Your requested equipment slots will appear here.</p><button className="primary" onClick={() => setTab("book")}>Find equipment ↗</button></div> :
-          <div className="table-wrap"><table><thead><tr><th>Equipment</th><th>Date & time</th><th>Status</th><th>Requested</th><th>Actions</th></tr></thead><tbody>{bookings.map((b) => <tr key={b.id}><td><strong>{b.equipment.name}</strong><small>{b.equipment.location}</small></td><td>{new Date(b.date).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric",timeZone:"UTC"})}<small>{b.startTime} – {b.endTime}</small></td><td><span className={`status status-${b.status.toLowerCase()}`}>{b.status}</span></td><td>{new Date(b.createdAt).toLocaleDateString()}</td><td><div className="row-actions">{b.status === "PENDING" && <button className="action-confirm" disabled={busy} onClick={() => bookingAction(b.id,"confirm")}>Confirm</button>}{b.status !== "CANCELLED" && <button className="action-cancel" disabled={busy} onClick={() => bookingAction(b.id,"cancel")}>Cancel</button>}</div></td></tr>)}</tbody></table></div>}
-      </section>}
-      <footer className="footer"><span>LABBOOK <span className="footer-dot">•</span> LABORATORY EQUIPMENT BOOKING SYSTEM</span><span>Built for better lab time.</span></footer>
-    </main>
-  </div>;
+        {tab === "equipment" && <section className="content-section">
+          <div className="section-heading"><div><h2>Equipment directory</h2><p>Browse the resources available for laboratory work.</p></div></div>
+          <div className="equipment-grid">
+            {equipment.map((item, i) => <article className="equipment-card" key={item.id}>
+              <div className={`equipment-icon icon-${i % 4}`}>{["◉", "▦", "⌬", "◎"][i % 4]}</div>
+              <div className="card-row"><span className={`pill ${item.isAvailable ? "available" : "unavailable"}`}>{item.isAvailable ? "Available" : "Unavailable"}</span><span className="item-id">LAB-{String(item.id).padStart(3, "0")}</span></div>
+              <h3>{item.name}</h3><p>{item.description}</p><div className="location">⌖ {item.location}</div>
+              {canBook && item.isAvailable && <button className="primary full" onClick={() => { setBookingForm({ ...bookingForm, equipmentId: String(item.id) }); setTab("new-booking"); }}>Request a slot ↗</button>}
+              {isAdmin && <button className="outline full" onClick={() => toggleEquipment(item)}>{item.isAvailable ? "Disable equipment" : "Enable equipment"}</button>}
+            </article>)}
+            {!equipment.length && <div className="empty-state">No equipment found. {isAdmin ? "Add equipment from Manage equipment." : "Please contact the lab administrator."}</div>}
+          </div>
+        </section>}
+
+        {tab === "new-booking" && canBook && <section className="content-section narrow">
+          <div className="section-heading"><div><h2>Request equipment</h2><p>Requests start as pending until a lab administrator reviews them.</p></div></div>
+          <form className="panel-form" onSubmit={createBooking}>
+            <label>Equipment<select required value={bookingForm.equipmentId} onChange={e => setBookingForm({ ...bookingForm, equipmentId: e.target.value })}><option value="">Choose equipment</option>{equipment.filter(e => e.isAvailable).map(e => <option key={e.id} value={e.id}>{e.name} — {e.location}</option>)}</select></label>
+            <label>Date<input type="date" required min={new Date().toISOString().slice(0, 10)} value={bookingForm.date} onChange={e => setBookingForm({ ...bookingForm, date: e.target.value })} /></label>
+            <div className="form-row"><label>Start time<input type="time" required value={bookingForm.startTime} onChange={e => setBookingForm({ ...bookingForm, startTime: e.target.value })} /></label><label>End time<input type="time" required value={bookingForm.endTime} onChange={e => setBookingForm({ ...bookingForm, endTime: e.target.value })} /></label></div>
+            <label>Purpose (optional)<textarea rows="3" maxLength="500" value={bookingForm.purpose} onChange={e => setBookingForm({ ...bookingForm, purpose: e.target.value })} placeholder="Briefly describe the experiment or activity" /></label>
+            <button className="primary" disabled={!equipment.some(e => e.id === Number(bookingForm.equipmentId) && e.isAvailable)}>Submit booking request ↗</button>
+          </form>
+        </section>}
+
+        {tab === "bookings" && <section className="content-section">
+          <div className="section-heading"><div><h2>{isAdmin ? "Booking requests" : "Your reservations"}</h2><p>{isAdmin ? "Review requests and manage the booking schedule." : "Track each request from submission to final status."}</p></div></div>
+          <div className="table-wrap"><table><thead><tr>{isAdmin && <th>Requester</th>}<th>Equipment</th><th>Date</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+            {bookings.map(b => <tr key={b.id}>
+              {isAdmin && <td><strong>{b.user?.name}</strong><small className="cell-sub">{b.user?.role}</small></td>}
+              <td><strong>{b.equipment?.name || `Equipment #${b.equipmentId}`}</strong><small className="cell-sub">{b.purpose || "No purpose provided"}</small></td>
+              <td>{prettyDate(b.date)}</td><td>{b.startTime}–{b.endTime}</td><td><span className={`pill status-${b.status.toLowerCase()}`}>{b.status}</span></td>
+              <td><div className="actions">
+                {isAdmin && b.status === "PENDING" && <><button className="mini success" onClick={() => reviewBooking(b.id, "CONFIRMED")}>Confirm</button><button className="mini danger" onClick={() => reviewBooking(b.id, "REJECTED")}>Reject</button></>}
+                {["PENDING", "CONFIRMED"].includes(b.status) && <button className="mini" onClick={() => cancelBooking(b.id)}>Cancel</button>}
+                {!isAdmin && !["PENDING", "CONFIRMED"].includes(b.status) && <span className="muted-text">—</span>}
+              </div></td>
+            </tr>)}
+            {!bookings.length && <tr><td colSpan={isAdmin ? 6 : 5}><div className="empty-state">No bookings yet.</div></td></tr>}
+          </tbody></table></div>
+        </section>}
+
+        {tab === "manage-equipment" && isAdmin && <section className="content-section narrow">
+          <div className="section-heading"><div><h2>Add equipment</h2><p>Add a resource to the directory.</p></div></div>
+          <form className="panel-form" onSubmit={addEquipment}>
+            <label>Equipment name<input required value={equipmentForm.name} onChange={e => setEquipmentForm({ ...equipmentForm, name: e.target.value })} /></label>
+            <label>Description<textarea required rows="3" value={equipmentForm.description} onChange={e => setEquipmentForm({ ...equipmentForm, description: e.target.value })} /></label>
+            <label>Lab location<input required value={equipmentForm.location} onChange={e => setEquipmentForm({ ...equipmentForm, location: e.target.value })} /></label>
+            <button className="primary">Add equipment ↗</button>
+          </form>
+          <div className="management-list">{equipment.map(item => <div className="management-row" key={item.id}><div><strong>{item.name}</strong><span>{item.location}</span></div><button className="outline" onClick={() => toggleEquipment(item)}>{item.isAvailable ? "Disable" : "Enable"}</button></div>)}</div>
+        </section>}
+        <footer className="footer">LABBOOK <span>•</span> LABORATORY EQUIPMENT BOOKING SYSTEM <span>•</span> DEVELOPMENT MVP</footer>
+      </main>
+    </div>
+  );
 }
