@@ -1,5 +1,6 @@
 require("dotenv").config();
 const { PrismaClient } = require("@prisma/client");
+const bcrypt = require("bcryptjs");
 const prisma = new PrismaClient();
 
 const equipment = [
@@ -10,6 +11,12 @@ const equipment = [
   { name: "Function Generator", description: "Signal generator for electronics and communication experiments.", location: "Electronics Lab" }
 ];
 
+const users = [
+  { name: "Test Student", email: "student@labbook.test", password: "Student@123", role: "STUDENT" },
+  { name: "Test Faculty", email: "faculty@labbook.test", password: "Faculty@123", role: "FACULTY" },
+  { name: "Test Lab Admin", email: "admin@labbook.test", password: "Admin@123", role: "LAB_ADMIN" }
+];
+
 async function main() {
   for (const item of equipment) {
     await prisma.equipment.upsert({
@@ -18,9 +25,24 @@ async function main() {
       create: item
     });
   }
-  console.log(`Seeded ${equipment.length} equipment records.`);
+
+  for (const user of users) {
+    const password = await bcrypt.hash(user.password, 10);
+    await prisma.user.upsert({
+      where: { email: user.email },
+      update: { name: user.name, password, role: user.role },
+      create: { name: user.name, email: user.email, password, role: user.role }
+    });
+  }
+
+  console.log(`Seeded ${equipment.length} equipment records and ${users.length} test users.`);
 }
 
 main()
-  .catch((error) => { console.error(error); process.exit(1); })
-  .finally(async () => { await prisma.$disconnect(); });
+  .catch((error) => {
+    console.error("Seed failed:", error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

@@ -1,112 +1,131 @@
 const express = require("express");
 const { PrismaClient } = require("@prisma/client");
-const { requireAuth } = require("../middleware/auth");
-
+const { authenticate, authorize } = require("../middleware/auth");
 const router = express.Router();
 const prisma = new PrismaClient();
 
-function validDate(date) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(new Date(`${date}T00:00:00.000Z`).getTime());
+router.use(authenticate);
+
+function validTime(value) {
+  return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
-router.get("/", requireAuth, async (req, res) => {
+function overlaps(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
+}
+
+router.get("/", async (req, res) => {
   try {
     const bookings = await prisma.booking.findMany({
-      where: { userId: req.user.id },
-      include: { equipment: { select: { id: true, name: true, location: true } } },
-      orderBy: [{ date: "desc" }, { startTime: "desc" }]
+      where: req.auth.role === "LAB_ADMIN" ? {} : { userId: req.auth.id },
+      include: {
+        equipment: true,
+        user: { select: { id: true, name: true, email: true, role: true } }
+      },
+      orderBy: [{ date: "desc" }, { startTime: "asc" }]
     });
-    res.json(bookings);
+    res.json({ bookings });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Could not load bookings." });
+    res.status(500).json({ error: "Could not load bookings." });
   }
 });
 
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", authorize("STUDENT", "FACULTY"), async (req, res) => {
   try {
     const equipmentId = Number(req.body.equipmentId);
     const dateText = String(req.body.date || "");
     const startTime = String(req.body.startTime || "");
     const endTime = String(req.body.endTime || "");
+    const purpose = String(req.body.purpose || "").trim();
 
-    if (!Number.isInteger(equipmentId) || equipmentId < 1 || !validDate(dateText) ||
-        !/^([01]\d|2[0-3]):00$/.test(startTime) || !/^([01]\d|2[0-3]):00$/.test(endTime)) {
-      return res.status(400).json({ message: "Select equipment, date and a valid time slot." });
-    }
-    const startHour = Number(startTime.slice(0, 2));
-    if (startHour < 9 || startHour >= 17 || endTime !== `${String(startHour + 1).padStart(2, "0")}:00`) {
-      return res.status(400).json({ message: "Bookings must use one-hour slots between 09:00 and 17:00." });
+    if (!Number.isInteger(equipmentId)) return res.status(400).json({ error: "Choose valid equipment." });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return res.status(400).json({ error: "Choose a valid date." });
+    if (!validTime(startTime) || !validTime(endTime) || startTime >= endTime) {
+      return res.status(400).json({ error: "End time must be later than start time." });
     }
     const date = new Date(`${dateText}T00:00:00.000Z`);
-    const now = new Date();
-    const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    if (date < today) return res.status(400).json({ message: "Bookings must be for today or a future date." });
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (date < today) return res.status(400).json({ error: "Bookings cannot be made in the past." });
 
-    const equipment = await prisma.equipment.findUnique({ where: { id: equipmentId } });
-    if (!equipment || !equipment.isAvailable) return res.status(404).json({ message: "Equipment is unavailable." });
+    const item = await prisma.equipment.findUnique({ where: { id: equipmentId } });
+    if (!item || !item.isAvailable) return res.status(400).json({ error: "This equipment is unavailable." });
 
-    const conflict = await prisma.booking.findFirst({
-      where: {
-        equipmentId, date, status: { in: ["PENDING", "CONFIRMED"] },
-        startTime: { lt: endTime }, endTime: { gt: startTime }
-      }
+    const existing = await prisma.booking.findMany({
+      where: { equipmentId, date, status: "CONFIRMED" }
     });
-    if (conflict) return res.status(409).json({ message: "That slot has already been requested or booked. Choose another slot." });
+    if (existing.some(b => overlaps(startTime, endTime, b.startTime, b.endTime))) {
+      return res.status(409).json({ error: "This time overlaps an existing confirmed booking." });
+    }
 
     const booking = await prisma.booking.create({
-      data: { userId: req.user.id, equipmentId, date, startTime, endTime, status: "PENDING" },
-      include: { equipment: { select: { id: true, name: true, location: true } } }
+      data: { userId: req.auth.id, equipmentId, date, startTime, endTime, purpose },
+      include: { equipment: true }
     });
-    res.status(201).json({ message: "Booking request submitted.", booking });
+    res.status(201).json({ booking });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Could not submit booking request." });
+    res.status(500).json({ error: "Could not create booking." });
   }
 });
 
-router.patch("/:id/confirm", requireAuth, async (req, res) => {
+router.patch("/:id/cancel", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const booking = await prisma.booking.findFirst({ where: { id, userId: req.user.id } });
-    if (!booking) return res.status(404).json({ message: "Booking not found." });
-    if (booking.status !== "PENDING") return res.status(400).json({ message: "Only pending requests can be confirmed." });
+    const booking = await prisma.booking.findUnique({ where: { id } });
+    if (!booking) return res.status(404).json({ error: "Booking not found." });
+    if (req.auth.role !== "LAB_ADMIN" && booking.userId !== req.auth.id) {
+      return res.status(403).json({ error: "You can only cancel your own bookings." });
+    }
+    if (!["PENDING", "CONFIRMED"].includes(booking.status)) {
+      return res.status(400).json({ error: "This booking cannot be cancelled." });
+    }
+    const updated = await prisma.booking.update({ where: { id }, data: { status: "CANCELLED" } });
+    res.json({ booking: updated });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Could not cancel booking." });
+  }
+});
 
-    const conflict = await prisma.booking.findFirst({
-      where: {
-        id: { not: id }, equipmentId: booking.equipmentId, date: booking.date,
-        status: { in: ["PENDING", "CONFIRMED"] },
-        startTime: { lt: booking.endTime }, endTime: { gt: booking.startTime }
+router.patch("/:id/review", authorize("LAB_ADMIN"), async (req, res) => {
+  const id = Number(req.params.id);
+  const status = String(req.body.status || "").toUpperCase();
+  if (!["CONFIRMED", "REJECTED"].includes(status)) {
+    return res.status(400).json({ error: "Status must be CONFIRMED or REJECTED." });
+  }
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id } });
+    if (!booking) return res.status(404).json({ error: "Booking not found." });
+    if (booking.status !== "PENDING") return res.status(400).json({ error: "Only pending bookings can be reviewed." });
+
+    if (status === "CONFIRMED") {
+      const conflicts = await prisma.booking.findMany({
+        where: {
+          equipmentId: booking.equipmentId,
+          date: booking.date,
+          status: "CONFIRMED",
+          NOT: { id }
+        }
+      });
+      if (conflicts.some(b => overlaps(booking.startTime, booking.endTime, b.startTime, b.endTime))) {
+        return res.status(409).json({ error: "Cannot confirm: this booking overlaps another confirmed booking." });
+      }
+    }
+
+    const updated = await prisma.booking.update({
+      where: { id },
+      data: { status },
+      include: {
+        equipment: true,
+        user: { select: { id: true, name: true, email: true, role: true } }
       }
     });
-    if (conflict) return res.status(409).json({ message: "This slot is no longer available." });
-
-    const updated = await prisma.booking.update({
-      where: { id }, data: { status: "CONFIRMED" },
-      include: { equipment: { select: { id: true, name: true, location: true } } }
-    });
-    res.json({ message: "Booking confirmed.", booking: updated });
+    res.json({ booking: updated });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Could not confirm booking." });
-  }
-});
-
-router.patch("/:id/cancel", requireAuth, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const booking = await prisma.booking.findFirst({ where: { id, userId: req.user.id } });
-    if (!booking) return res.status(404).json({ message: "Booking not found." });
-    if (booking.status === "CANCELLED") return res.status(400).json({ message: "Booking is already cancelled." });
-
-    const updated = await prisma.booking.update({
-      where: { id }, data: { status: "CANCELLED" },
-      include: { equipment: { select: { id: true, name: true, location: true } } }
-    });
-    res.json({ message: "Booking cancelled.", booking: updated });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Could not cancel booking." });
+    res.status(500).json({ error: "Could not review booking." });
   }
 });
 

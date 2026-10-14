@@ -5,10 +5,17 @@ const { PrismaClient } = require("@prisma/client");
 
 const app = express();
 const prisma = new PrismaClient();
-app.use(cors());
-app.use(express.json());
+const port = Number(process.env.PORT || 3000);
 
-app.get("/api/health", async (_req, res) => {
+if (!process.env.JWT_SECRET) {
+  console.error("JWT_SECRET is missing. Set it in backend/.env before starting the server.");
+  process.exit(1);
+}
+
+app.use(cors({ origin: true }));
+app.use(express.json({ limit: "1mb" }));
+
+app.get("/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     res.json({ status: "ok", database: "connected" });
@@ -21,18 +28,19 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/equipment", require("./routes/equipment"));
 app.use("/api/bookings", require("./routes/bookings"));
 
-app.use((req, res) => res.status(404).json({ message: "Endpoint not found" }));
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(500).json({ message: "Internal server error" });
+  res.status(500).json({ error: "Unexpected server error." });
 });
 
-const port = Number(process.env.PORT || 3000);
-const server = app.listen(port, () => console.log(`Laboratory Booking API running on port ${port}`));
+const server = app.listen(port, () => {
+  console.log(`Laboratory Booking API listening on http://localhost:${port}`);
+});
 
 async function shutdown() {
   server.close();
   await prisma.$disconnect();
+  process.exit(0);
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

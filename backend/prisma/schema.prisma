@@ -7,11 +7,25 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  STUDENT
+  FACULTY
+  LAB_ADMIN
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+  CANCELLED
+}
+
 model User {
   id        Int       @id @default(autoincrement())
   name      String
   email     String    @unique
   password  String
+  role      UserRole  @default(STUDENT)
   createdAt DateTime  @default(now())
   bookings  Booking[]
 }
@@ -27,24 +41,19 @@ model Equipment {
 }
 
 model Booking {
-  id          Int       @id @default(autoincrement())
+  id          Int           @id @default(autoincrement())
   userId      Int
   equipmentId Int
   date        DateTime
   startTime   String
   endTime     String
+  purpose     String        @default("")
   status      BookingStatus @default(PENDING)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  equipment   Equipment     @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
 
   @@index([equipmentId, date])
   @@index([userId, createdAt])
-}
-
-enum BookingStatus {
-  PENDING
-  CONFIRMED
-  CANCELLED
 }
