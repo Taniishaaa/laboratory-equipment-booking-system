@@ -60,20 +60,37 @@ pipeline {
             }
         }
 
-        stage('Deploy') {
-            steps {
+       
+stage('Deploy') {
+    steps {
+        script {
+            def deployDir = params.DEPLOY_DIR?.trim()
+
+            if (!deployDir) {
+                error('DEPLOY_DIR parameter cannot be empty.')
+            }
+
+            if (!(deployDir ==~ /[A-Za-z]:\\[A-Za-z0-9_ .\\-]+/)) {
+                error('DEPLOY_DIR must be a local Windows path, e.g. C:\\LabBooking-Deploy')
+            }
+
+            withEnv(["DEPLOY_TARGET=${deployDir}"]) {
                 bat '''
                     @echo off
-                    if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
+                    echo ===== Deploying frontend =====
+                    if not exist "%DEPLOY_TARGET%" mkdir "%DEPLOY_TARGET%"
                     if errorlevel 1 exit /b 1
 
-                    xcopy "frontend\\dist\\*" "%DEPLOY_DIR%\\" /E /I /Y
+                    xcopy "frontend\\dist\\*" "%DEPLOY_TARGET%\\" /E /I /Y
                     if errorlevel 1 exit /b 1
 
-                    echo Frontend deployed to %DEPLOY_DIR%
+                    echo Frontend deployed to %DEPLOY_TARGET%
                 '''
             }
         }
+    }
+}
+
     }
 
     post {
