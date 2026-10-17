@@ -51,37 +51,62 @@ pipeline {
             }
         }
 
-        
 
-stage('Test') {
-    steps {
-        script {
-            try {
-                dir('frontend') {
-                    bat '''
-                        powershell -NoProfile -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c npm run preview -- --host 127.0.0.1 --port 4173' -WorkingDirectory '%CD%' -WindowStyle Hidden"
-                    '''
+        stage('Test') {
+            steps {
+                script {
+                    try {
+                        dir('frontend') {
+                            bat '''
+                                @echo off
+                                if not exist dist\\index.html (
+                                    echo ERROR: Frontend build output is missing.
+                                    exit /b 1
+                                )
+
+                                if exist preview.log del preview.log
+
+                                start "VitePreview4173" /B cmd.exe /c "npm.cmd run preview -- --host 127.0.0.1 --port 4173 > preview.log 2>&1"
+                            '''
+                        }
+
+                        bat '''
+                            @echo off
+                            set "READY=0"
+
+                            for /L %%i in (1,1,30) do (
+                                curl.exe --silent --fail http://127.0.0.1:4173/ -o nul
+                                if not errorlevel 1 (
+                                    set "READY=1"
+                                    goto :server_ready
+                                )
+                                timeout /t 2 /nobreak >nul
+                            )
+
+                            :server_ready
+                            if "%READY%"=="0" (
+                                echo ERROR: Vite Preview did not start.
+                                echo ===== Preview log =====
+                                type frontend\\preview.log
+                                exit /b 1
+                            )
+
+                            echo Frontend is ready on port 4173.
+                        '''
+
+                        dir('selenium-tests') {
+                            bat 'mvn clean test'
+                        }
+                    } finally {
+                        bat '''
+                            @echo off
+                            powershell -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue; if($c){$c | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"
+                        '''
+                    }
                 }
-
-                bat '''
-                    powershell -NoProfile -Command "$deadline=(Get-Date).AddSeconds(60); do { try { $null=Invoke-WebRequest -Uri 'http://127.0.0.1:4173' -TimeoutSec 2; exit 0 } catch { Start-Sleep -Seconds 2 } } while ((Get-Date) -lt $deadline); exit 1"
-                    if errorlevel 1 (
-                        echo Frontend failed to start. Check port 4173.
-                        exit /b 1
-                    )
-                '''
-
-                dir('selenium-tests') {
-                    bat 'mvn clean test'
-                }
-            } finally {
-                bat '''
-                    powershell -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue; if($c){Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue}"
-                '''
             }
         }
-    }
-}
+
 
 
 
