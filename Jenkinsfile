@@ -52,32 +52,23 @@ pipeline {
         }
 
         
+
 stage('Test') {
     steps {
         script {
-            def previewProcess = null
-
             try {
                 dir('frontend') {
-                    bat 'if not exist dist exit /b 1'
-                    previewProcess = bat(
-                        script: 'start "Vite Preview" /B cmd /c "npm run preview -- --host 127.0.0.1 --port 4173 > preview.log 2>&1"',
-                        returnStatus: true
-                    )
+                    bat '''
+                        powershell -NoProfile -Command "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c npm run preview -- --host 127.0.0.1 --port 4173' -WorkingDirectory '%CD%' -WindowStyle Hidden"
+                    '''
                 }
 
                 bat '''
-                    @echo off
-                    for /L %%i in (1,1,30) do (
-                        powershell -NoProfile -Command "try { Invoke-WebRequest http://127.0.0.1:4173 -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }"
-                        if not errorlevel 1 goto server_ready
-                        timeout /t 2 /nobreak >nul
+                    powershell -NoProfile -Command "$deadline=(Get-Date).AddSeconds(60); do { try { $null=Invoke-WebRequest -Uri 'http://127.0.0.1:4173' -TimeoutSec 2; exit 0 } catch { Start-Sleep -Seconds 2 } } while ((Get-Date) -lt $deadline); exit 1"
+                    if errorlevel 1 (
+                        echo Frontend failed to start. Check port 4173.
+                        exit /b 1
                     )
-                    echo Vite Preview did not start. Check frontend\\preview.log
-                    exit /b 1
-
-                    :server_ready
-                    echo Frontend is responding on port 4173.
                 '''
 
                 dir('selenium-tests') {
@@ -85,13 +76,13 @@ stage('Test') {
                 }
             } finally {
                 bat '''
-                    @echo off
-                    powershell -NoProfile -Command "$p = Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue; if ($p) { $p | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }"
+                    powershell -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue; if($c){Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue}"
                 '''
             }
         }
     }
 }
+
 
 
         stage('Package') {
