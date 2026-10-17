@@ -51,6 +51,14 @@ pipeline {
             }
         }
 
+        stage('Test') {
+    steps {
+        dir('selenium-tests') {
+            bat 'mvn clean test'
+        }
+    }
+}
+
         stage('Package') {
             steps {
                 archiveArtifacts(
@@ -92,6 +100,18 @@ stage('Deploy') {
 }
 
     }
+
+    post {
+    always {
+        junit testResults: 'selenium-tests/target/surefire-reports/*.xml',
+              allowEmptyResults: true
+
+        archiveArtifacts(
+            artifacts: 'selenium-tests/target/surefire-reports/**,selenium-tests/target/screenshots/**',
+            allowEmptyArchive: true
+        )
+    }
+}
 
     post {
         success {
