@@ -47,15 +47,9 @@ pipeline {
                 dir('frontend') {
                     bat '''
                         @echo off
-                        echo ===== Frontend directory =====
-                        cd
-                        if not exist package.json exit /b 1
                         echo ===== Frontend dependencies =====
                         call npm ci
                         if errorlevel 1 exit /b 1
-
-                        echo ===== Available npm scripts =====
-                        call npm run
 
                         echo ===== Frontend production build =====
                         call npm run build
@@ -82,20 +76,39 @@ pipeline {
             }
         }
 
-        stage('Start App and Run Selenium Tests') {
+        stage('Start App') {
             steps {
+                // Free ports 3000/4173 in case an earlier run left processes behind.
+                bat '''
+                    @echo off
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; exit 0"
+                '''
+
+                // Start-Process with -WorkingDirectory avoids the cmd "start ... cd /d ... ^&^&" quoting
+                // problem that caused "The system cannot find the path specified."
                 bat '''
                     @echo off
                     echo ===== Starting backend =====
-                    start "LabBookingAPI" /B cmd.exe /c "cd /d backend ^&^& npm.cmd start > backend-test.log 2>&1"
-                    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ready=$false; for($i=0;$i -lt 40;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3000/health -TimeoutSec 2; if($r.StatusCode -eq 200){$ready=$true;break} } catch {}; Start-Sleep -Seconds 2 }; if(-not $ready){ Get-Content (Join-Path $env:WORKSPACE 'backend-test.log') -ErrorAction SilentlyContinue; throw 'Backend did not become healthy at http://127.0.0.1:3000/health' }"
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'npm.cmd' -ArgumentList 'start' -WorkingDirectory (Join-Path $env:WORKSPACE 'backend') -RedirectStandardOutput (Join-Path $env:WORKSPACE 'backend-test.log') -RedirectStandardError (Join-Path $env:WORKSPACE 'backend-test.err.log') -WindowStyle Hidden"
                     if errorlevel 1 exit /b 1
 
-                    echo ===== Starting Vite preview =====
-                    start "VitePreview4173" /B cmd.exe /c "cd /d frontend ^&^& npm.cmd run preview -- --host 127.0.0.1 --port 4173 > preview.log 2>&1"
-                    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ready=$false; for($i=0;$i -lt 30;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4173 -TimeoutSec 2; if($r.StatusCode -eq 200){$ready=$true;break} } catch {}; Start-Sleep -Seconds 2 }; if(-not $ready){ Get-Content (Join-Path $env:WORKSPACE 'preview.log') -ErrorAction SilentlyContinue; throw 'Frontend preview did not become ready at http://127.0.0.1:4173' }"
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ready=$false; for($i=0;$i -lt 30;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3000/health -TimeoutSec 2; if($r.StatusCode -eq 200){$ready=$true;break} } catch {}; Start-Sleep -Seconds 2 }; if(-not $ready){ Get-Content (Join-Path $env:WORKSPACE 'backend-test.log'),(Join-Path $env:WORKSPACE 'backend-test.err.log') -ErrorAction SilentlyContinue; Write-Error 'Backend did not become healthy at http://127.0.0.1:3000/health'; exit 1 }"
                     if errorlevel 1 exit /b 1
+                    echo Backend is healthy.
+
+                    echo ===== Starting Vite preview =====
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'npm.cmd' -ArgumentList 'run','preview','--','--host','127.0.0.1','--port','4173' -WorkingDirectory (Join-Path $env:WORKSPACE 'frontend') -RedirectStandardOutput (Join-Path $env:WORKSPACE 'preview.log') -RedirectStandardError (Join-Path $env:WORKSPACE 'preview.err.log') -WindowStyle Hidden"
+                    if errorlevel 1 exit /b 1
+
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ready=$false; for($i=0;$i -lt 20;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4173 -TimeoutSec 2; if($r.StatusCode -eq 200){$ready=$true;break} } catch {}; Start-Sleep -Seconds 2 }; if(-not $ready){ Get-Content (Join-Path $env:WORKSPACE 'preview.log'),(Join-Path $env:WORKSPACE 'preview.err.log') -ErrorAction SilentlyContinue; Write-Error 'Frontend preview did not become ready at http://127.0.0.1:4173'; exit 1 }"
+                    if errorlevel 1 exit /b 1
+                    echo Frontend preview is ready.
                 '''
+            }
+        }
+
+        stage('Selenium Tests') {
+            steps {
                 dir('selenium-tests') {
                     bat '''
                         @echo off
@@ -107,19 +120,14 @@ pipeline {
             }
         }
 
-        stage('Publish Test Results') {
-            steps {
-                junit testResults: 'selenium-tests/target/surefire-reports/*.xml', allowEmptyResults: false
-                archiveArtifacts artifacts: 'selenium-tests/target/screenshots/**,backend-test.log,preview.log', allowEmptyArchive: true
-            }
-        }
-
         stage('Package') {
             steps {
                 archiveArtifacts artifacts: 'frontend/dist/**', fingerprint: true
             }
         }
 
+        // Only reached when every Selenium test passed: a failed test fails the
+        // 'Selenium Tests' stage, so Package and Deploy are skipped automatically.
         stage('Deploy') {
             steps {
                 script {
@@ -144,11 +152,22 @@ pipeline {
     }
 
     post {
+        always {
+            // Runs on success AND failure, so the report and failure screenshots are always published.
+            junit testResults: 'selenium-tests/target/surefire-reports/*.xml', allowEmptyResults: true
+            archiveArtifacts artifacts: 'selenium-tests/target/screenshots/**,selenium-tests/target/surefire-reports/**,backend-test*.log,preview*.log', allowEmptyArchive: true
+
+            // Stop the backend and preview servers so the next run starts clean.
+            bat '''
+                @echo off
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; exit 0"
+            '''
+        }
         success {
             echo 'Pipeline completed successfully.'
         }
         failure {
-            echo 'Pipeline failed. Check the stage logs.'
+            echo 'Pipeline failed. Check the stage logs and the Test Result page.'
         }
     }
 }
