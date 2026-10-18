@@ -223,3 +223,5 @@ This application is intended to be used through the lab tasks for Git collaborat
 - Public registration creates student accounts only.
 - The seeded credentials are for local development only.
 - Review and test the application before production use.
+
+

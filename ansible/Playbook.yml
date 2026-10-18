@@ -1,0 +1,140 @@
+---
+- name: Configure the Laboratory Equipment Booking server
+  hosts: labserver
+  become: true
+
+  vars:
+    app_user: labbook
+    app_dir: /opt/labbook
+    app_repo: https://github.com/Taniishaaa/laboratory-equipment-booking-system.git
+    app_version: develop        # git branch or tag to deploy (e.g. v1.0.0)
+    app_port: 3000
+    db_name: laboratory_booking
+    db_user: postgres
+    db_password: labbook-db-pass
+    jwt_secret: ansible-lab-secret-change-in-production
+
+  tasks:
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - git
+          - curl
+          - python3-docker
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create application user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        home: "{{ app_dir }}"
+        create_home: false
+        groups: docker
+        append: true
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Write application environment file
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/app.env"
+        owner: "{{ app_user }}"
+        mode: "0600"
+        content: |
+          DATABASE_URL=postgresql://{{ db_user }}:{{ db_password }}@lab-db:5432/{{ db_name }}?schema=public
+          JWT_SECRET={{ jwt_secret }}
+          PORT={{ app_port }}
+
+    - name: Ensure Docker service is enabled and running
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Fetch application source from GitHub
+      ansible.builtin.git:
+        repo: "{{ app_repo }}"
+        dest: "{{ app_dir }}/src"
+        version: "{{ app_version }}"
+        force: true
+
+    - name: Build application image
+      community.docker.docker_image:
+        name: lab-booking
+        tag: "{{ app_version }}"
+        source: build
+        build:
+          path: "{{ app_dir }}/src"
+
+    - name: Create Docker network
+      community.docker.docker_network:
+        name: lab-net
+
+    - name: Run PostgreSQL container
+      community.docker.docker_container:
+        name: lab-db
+        image: postgres:16
+        state: started
+        restart_policy: unless-stopped
+        networks:
+          - name: lab-net
+        env:
+          POSTGRES_USER: "{{ db_user }}"
+          POSTGRES_PASSWORD: "{{ db_password }}"
+          POSTGRES_DB: "{{ db_name }}"
+        volumes:
+          - lab-db-data:/var/lib/postgresql/data
+
+    - name: Wait for PostgreSQL to accept connections
+      ansible.builtin.command: docker exec lab-db pg_isready -U {{ db_user }}
+      register: db_ready
+      retries: 15
+      delay: 3
+      until: db_ready.rc == 0
+      changed_when: false
+
+    - name: Run application container
+      community.docker.docker_container:
+        name: lab-booking
+        image: "lab-booking:{{ app_version }}"
+        state: started
+        restart_policy: unless-stopped
+        networks:
+          - name: lab-net
+        published_ports:
+          - "{{ app_port }}:3000"
+        env_file: "{{ app_dir }}/app.env"
+
+    - name: Apply database migrations
+      ansible.builtin.command: docker exec lab-booking npx prisma migrate deploy
+      register: migrate
+      retries: 5
+      delay: 3
+      until: migrate.rc == 0
+      changed_when: "'No pending migrations' not in migrate.stdout"
+
+    - name: Seed test accounts and equipment
+      ansible.builtin.command: docker exec lab-booking npm run seed
+      changed_when: false
+
+    - name: Wait for application port
+      ansible.builtin.wait_for:
+        port: "{{ app_port }}"
+        timeout: 60
+
+    - name: Health check
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/health"
+        status_code: 200
+      register: health
+      retries: 10
+      delay: 3
+      until: health.status == 200
