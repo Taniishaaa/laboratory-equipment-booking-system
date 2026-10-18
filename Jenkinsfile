@@ -17,6 +17,8 @@ pipeline {
     environment {
         DATABASE_URL = 'postgresql://postgres:postgres@localhost:5433/laboratory_booking?schema=public'
         JWT_SECRET = 'jenkins-test-only-secret-change-before-production'
+        IMAGE_NAME = 'localhost:5000/lab-booking'
+        CONTAINER_DATABASE_URL = 'postgresql://postgres:postgres@host.docker.internal:5433/laboratory_booking?schema=public'
     }
 
     stages {
@@ -81,7 +83,8 @@ pipeline {
                 // Free ports 3000/4173 in case an earlier run left processes behind.
                 bat '''
                     @echo off
-                    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; exit 0"
+                    docker rm -f lab-booking >nul 2>&1
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'node') { Stop-Process -Id $p.Id -Force } }; exit 0"
                 '''
 
                 // Start-Process with -WorkingDirectory avoids the cmd "start ... cd /d ... ^&^&" quoting
@@ -149,6 +152,50 @@ pipeline {
                 }
             }
         }
+
+        stage('Docker Build and Push') {
+            steps {
+                bat '''
+                    @echo off
+                    echo ===== Building image %IMAGE_NAME%:%BUILD_NUMBER% =====
+                    docker build -t %IMAGE_NAME%:%BUILD_NUMBER% -t %IMAGE_NAME%:latest .
+                    if errorlevel 1 exit /b 1
+
+                    echo ===== Pushing to local registry =====
+                    docker push %IMAGE_NAME%:%BUILD_NUMBER%
+                    if errorlevel 1 exit /b 1
+                    docker push %IMAGE_NAME%:latest
+                    if errorlevel 1 exit /b 1
+                '''
+            }
+        }
+
+        stage('Deploy Container') {
+            steps {
+                bat '''
+                    @echo off
+                    echo ===== Stopping test servers =====
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'node') { Stop-Process -Id $p.Id -Force } }; exit 0"
+
+                    echo ===== Removing previous container =====
+                    docker rm -f lab-booking >nul 2>&1
+
+                    echo ===== Pulling image from registry =====
+                    docker pull %IMAGE_NAME%:%BUILD_NUMBER%
+                    if errorlevel 1 exit /b 1
+
+                    echo ===== Starting fresh container =====
+                    docker run -d --name lab-booking -p 3000:3000 -e "DATABASE_URL=%CONTAINER_DATABASE_URL%" -e "JWT_SECRET=%JWT_SECRET%" %IMAGE_NAME%:%BUILD_NUMBER%
+                    if errorlevel 1 exit /b 1
+
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "$ready=$false; for($i=0;$i -lt 20;$i++){ try { $r=Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3000/health -TimeoutSec 2; if($r.StatusCode -eq 200){$ready=$true;break} } catch {}; Start-Sleep -Seconds 2 }; if(-not $ready){ docker logs lab-booking; Write-Error 'Container did not become healthy'; exit 1 }"
+                    if errorlevel 1 exit /b 1
+
+                    docker ps --filter name=lab-booking
+                    echo Container lab-booking is running image %IMAGE_NAME%:%BUILD_NUMBER% at http://localhost:3000
+                '''
+            }
+        }
     }
 
     post {
@@ -160,7 +207,7 @@ pipeline {
             // Stop the backend and preview servers so the next run starts clean.
             bat '''
                 @echo off
-                powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; exit 0"
+                powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3000,4173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'node') { Stop-Process -Id $p.Id -Force } }; exit 0"
             '''
         }
         success {

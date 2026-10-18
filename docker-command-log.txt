@@ -1,0 +1,64 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261018211139
+Username: LAPTOP-JJONMQBL\Tanisha
+RunAs User: LAPTOP-JJONMQBL\Tanisha
+Configuration Name: 
+Machine: LAPTOP-JJONMQBL (Microsoft Windows NT 10.0.26300.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+Process ID: 17376
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is docker-command-log.txt
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker build -t lab-booking:1.0 .
+ => => exporting attestation manifest sha256:1a81e188cbe9c5672cb7644e5e4de2c974cc360  0.1s
+ => => exporting manifest list sha256:70bf3a9020c5f3fc705c5222b5a070a93feecc3a9a5cc7  0.1s
+ => => naming to docker.io/library/lab-booking:1.0                                    0.0s
+ => => unpacking to docker.io/library/lab-booking:1.0                                 6.4s
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker tag lab-booking:1.0 lab-booking:latest
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker images lab-booking
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker image inspect lab-booking:1.0
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker run -d --name lab-booking -p 3000:3000 -e DATABASE_URL="postgresql://postgres:postgres@host.docker.internal:5433/laboratory_booking?schema=public" -e JWT_SECRET="docker-test-secret" lab-booking:1.0
+4fd7b528e1ec9a298d32afd805caade153fefe38973951fc8c9c7ebfe11942ea
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker ps
+CONTAINER ID   IMAGE             COMMAND                  CREATED          STATUS         PORTS
+     NAMES
+4fd7b528e1ec   lab-booking:1.0   "docker-entrypoint.s…"   10 seconds ago   Up 8 seconds   0.0.0.0:3000->3000/tcp, [::]:3000->3000/t
+cp   lab-booking
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker logs lab-booking
+Laboratory Booking API listening on http://localhost:3000
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker stop lab-booking
+lab-booking
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker ps -a
+          NAMES
+4fd7b528e1ec   lab-booking:1.0            "docker-entrypoint.s…"   About a minute ago   Exited (0) 4 seconds ago
+          lab-booking
+f6fed97d6063   sakiladb/postgres:latest   "docker-entrypoint.s…"   7 weeks ago          Exited (255) 3 weeks ago   0.0.0.0:15432->5
+432/tcp   sakila
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker start lab-booking
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker restart lab-booking
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker logs lab-booking
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker stop lab-booking
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker rm lab-booking
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> docker ps -a
+
+PS C:\Users\Tanisha\OneDrive\Documents\GitHub\laboratory-equipment-booking-system> Stop-Transcript
+**********************
+Windows PowerShell transcript end
+End time: 20261018211925
+**********************
