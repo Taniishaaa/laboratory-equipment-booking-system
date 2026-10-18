@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+.git
+.github
+selenium-tests
+**/.env
+**/*.log
+backend/.claude
+backend/.cursor
+backend/.devin
+backend/.agents
