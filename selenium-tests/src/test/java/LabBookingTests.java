@@ -87,6 +87,9 @@ class LabBookingTests {
 
         wait.until(ExpectedConditions.visibilityOfElementLocated(
                 By.xpath("//h2[contains(normalize-space(.),'Equipment directory')]")));
+        // The heading renders before the equipment API responds, so wait for the data itself.
+        wait.until(ExpectedConditions.textToBePresentInElementLocated(
+                By.tagName("body"), "Digital Oscilloscope"));
         assertTrue(driver.getPageSource().contains("Digital Oscilloscope"),
                 "Seeded equipment should be visible after student login");
     }
